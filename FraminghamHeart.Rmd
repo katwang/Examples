@@ -1,0 +1,163 @@
+---
+title: 'The Effects of BMI on Mortality'
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning=FALSE, message = FALSE)
+```
+
+```{r}
+# installing appropriate libraries
+library(foreign)
+library(ggplot2)
+theme_set(theme_bw())
+```
+
+### Exploratory Data Analysis
+
+I am only studying how age and sex interact with the effect of BMI on mortality, so I removed any rows with missing values. 19 rows were deleted. Additionally, the `sex` variable is converted to an indicator variable (Female = 1 for females, Female = 0 for males). The preliminary boxplot also suggests that there is a difference in BMI between sexes.
+
+```{r}
+dat <- read.dta(file="framingham.dta") 
+paste0('number rows: ',nrow(dat),'; number columns: ',ncol(dat))
+temp <- dat[,c("bmi","sex","age","death")] 
+dat <- dat[complete.cases(temp), ] 
+paste0('rows deleted: ',nrow(dat)-nrow(dat[complete.cases(temp), ] ))
+
+dat$female <- dat$sex-1 
+tapply(dat$bmi, dat$female, summary)
+ggplot(data = dat) + geom_boxplot(aes(female, bmi, group=female))
+```
+
+### Simple Logistic Regression
+
+First, we start with a simple logistic regression model to assess the effects of BMI on mortality. 
+
+$$
+logit(mortality)=\beta_0+\beta_1bmi
+$$
+
+```{r}
+m1 <- glm(death~bmi, family=binomial(), data=dat)
+summary(m1)
+ci <- exp(confint(m1)*5)[2,]
+ci
+```
+
+The $\beta_1$ coefficient is statistically significant at the 0.05 significance level (p<0.05), indicating that there is a statistically significant association between mortality and BMI. The odds of mortality increase by $e^{0.050932}$ per one unit increase in BMI. We can then expand this to say that a 5-unit increase in BMI will raise the odds of mortality by $e^{0.050932*5}=1.29$. The confidence interval for this is $(1.197, 1.391)$.
+
+### Non-Linear Effects
+
+Next, we can evaluate if there are any nonlinear effects of BMI on the logit scale. To do this, we can add the linear and quadratic effects of BMI.
+
+```{r}
+dat$bmi2 <- (dat$bmi)^2 
+m2 <- glm(death~bmi+bmi2, family=binomial(), data=dat) 
+summary(m2)
+
+# odds ratios
+odds20=exp(-1.6476413+0.0287998*20+0.0003947*20^2) 
+odds25=exp(-1.6476413+0.0287998*25+0.0003947*25^2) 
+odds30=exp(-1.6476413+0.0287998*30+0.0003947*30^2)
+odds35=exp(-1.6476413+0.0287998*35+0.0003947*35^2) 
+or1=odds25/odds20
+or2=odds35/odds30
+print(c(or1,or2))
+```
+
+From the output of the model, we can estimate some odds ratios - for example: the odds ratio for a 5-unit increase in BMI from 20 to 25 is 1.262, while the odds ratio for a 5-unit increase in BMI from 30 to 35 is 1.313. There is an expected difference in odds ratio estimates here since there is a quadratic BMI term in the model.
+
+When adding the quadratic BMI term, the coefficients change (by more than 10%) and the BMI term is no longer statistically significant at the 0.05 signifiance level (p>.05). It seems like the quadratic BMI term is not necessary, since the BMI^2 coefficient is not statistically significant at the 0.05 level ($p=0.695$). From the plot, we can see that the models are quite similar, with the quadratic model being slightly more curved as expected.
+
+```{r}
+ggplot(data = dat) + 
+  geom_point(aes(m1$fitted.values,dat$bmi, color = 'dark blue')) +
+  geom_point(aes(m2$fitted.values,dat$bmi, color = 'seagreen')) +
+  xlab('BMI') +
+  ylab('P(death)') +
+  ggtitle('Comparing models with and without quadratic BMI') + 
+  scale_color_manual(name = 'model types',
+                     values = c('dark blue', 'seagreen'),
+                     labels = c('linear','quadratic'))
+```
+
+## Gender as a confounder or effect modifier
+
+```{r}
+m3 <- glm(death~bmi+female,family=binomial(),data=dat) 
+summary(m3)
+
+m4 <- glm(death~bmi+female+bmi*female,family=binomial(),data=dat)
+summary(m4)
+```
+
+The first model tested in this section, $logit(mortality)=\beta_0+\beta_1bmi+\beta_2I(female)$, indicates that sex is not a confounder of the effect of BMI on mortality. There is a $\frac{0.050932-0.047439}{0.050932}=0.069\to 6.9\%$ change in the BMI coefficient, which is very small. However, it does seem to be an effect modifier - the sex*BMI interaction term is statistically significant at the 0.05 significance level ($p=0.0005$).
+
+## Age as a confounder or effect modifier
+
+In this dataset, there are two variables related to age - a continuous and a categorical variable. To see which one to use, I fit a simple linear regression using each of these variables and compared them. 
+
+```{r}
+m5 <- glm(death ~ age, family=binomial(), data=dat)
+summary(m5)
+
+m6 <- glm(death ~ agecat, family=binomial(), data=dat)
+summary(m6)
+
+m7 <- glm(death ~ as.factor(agecat), family=binomial(), data=dat)
+summary(m7)
+
+
+anova(m6, m7, test="Chisq")
+
+ggplot() + 
+  geom_point(aes(dat$age,m5$fitted.values, color = 'dark blue')) +
+  geom_point(aes(dat$age,m6$fitted.values, color = 'seagreen')) +
+  xlab('age') +
+  ylab('P(death)') +
+  scale_color_manual(name = 'model types',
+                     values = c('dark blue', 'seagreen'),
+                     labels = c('linear','ordinal'))
+```
+
+From the likelihood ratio test between the `agecat` and categorical `agecat` models, we fail to reject the hypothesis that `agecat` is the preferred variable at the 0.05 signifiance level since $p=0.053$. Therefore, we conclude that the ordinal `agecat` model is preferred. Plotting the fitted values of the ordinal `agecat` model and the linear/continuous `age` model, the fitted values from the continuous `age` model seem to be a better fit.
+
+For ease of interpretation, I used the categorical `agecat` variable to test for confounding and effect modification.
+
+```{r}
+m10 <- glm(death~bmi+as.factor(agecat),family=binomial(), data=dat) 
+summary(m10)
+
+m11 <- glm(death~bmi*as.factor(agecat),family=binomial(), data=dat) 
+summary(m11)
+
+anova(m10, m11, test="Chisq")
+```
+
+From the models above, we can conclude that age category is a confounder, but not an effect modifier of the effect of BMI on mortality. When age category is added to the BMI model, there is a $\frac{0.05-0.03}{0.05}=0.4\to 40\%$ change in the BMI coefficient. It is not an effect modifier because the interaction term is not statistically significant at the 0.05 significance level. We come to the same conclusions when `agecat` is treated as a continuous variable and when it is treated as a discrete variable. The chi square test also reflects that the $logit(mortality)=\beta_0+\beta_1bmi+\beta_2I(agecat=2)+\beta_3I(agecat=3)+\beta_4I(agecat=4)$ model is preferred over the model with the interaction terms.
+
+```{r}
+oddsage1 = exp(-2.91079+0.03025) 
+oddsage2 = exp(-2.91079+0.03025 + 0.83656) 
+oddsage3 = exp(-2.91079+0.03025 + 1.75306) 
+oddsage4 = exp(-2.91079+0.03025 + 2.96480) 
+print(c(oddsage1, oddsage2, oddsage3, oddsage4))
+```
+
+We conclude that the odds of mortality for a one-unit increase in BMI is estimated to be 0.056 for those in $age < 40$ ($agecat=1$), 0.123 for those in $40\leq age < 50$ ($agecat=2$), 0.324 for those in $50\leq age < 60$ ($agecat=3$), and 1.088 for those in $age \geq 60$ ($agecat=4$).
+
+## The final model fit
+
+$$
+logit(mortality) = \beta_0+\beta_1bmi+\beta_2I(agecat=2)+\beta_3I(agecat=3)+\beta_4I(agecat=4) + \beta_5I(female) + \beta_6I(female)*bmi
+$$
+
+```{r}
+m12 <- glm(death~bmi + as.factor(agecat) + female + bmi*female,family=binomial(), data=dat) 
+summary(m12)
+```
+
+From the final model, we can conclude that BMI does not have a statistically significant effect on mortality, adjusted for gender and categorical age.
